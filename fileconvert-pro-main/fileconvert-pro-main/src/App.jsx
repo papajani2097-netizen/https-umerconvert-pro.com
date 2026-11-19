@@ -225,6 +225,107 @@ export default function App() {
     pdf.getPages().forEach((page) => page.setRotation(degrees((page.getRotation().angle + amount) % 360)));
     downloadBlob(await pdfBlob(pdf), `${baseName(files[0].name)}-rotated.pdf`);
   }
+    async function compressPdf() {
+    if (!files.length) {
+      throw new Error("Choose one PDF file to compress.");
+    }
+
+    const file = files[0];
+    const loadingTask = pdfjsLib.getDocument({
+      data: new Uint8Array(await file.arrayBuffer())
+    });
+
+    const sourcePdf = await loadingTask.promise;
+    if (!sourcePdf.numPages) {
+      throw new Error("This PDF has no pages.");
+    }
+
+    const levels = {
+      maximum: { scale: 1.1, quality: 0.55 },
+      high: { scale: 1.25, quality: 0.65 },
+      smaller: { scale: 1.35, quality: 0.68 },
+      balanced: { scale: 1.5, quality: 0.72 },
+      recommended: { scale: 1.6, quality: 0.78 }
+    };
+
+    const selected = levels[compressionLevel] || levels.recommended;
+    const pdf = new jsPDF({
+      unit: "pt",
+      format: "a4",
+      compress: true
+    });
+
+    pdf.deletePage(1);
+
+    try {
+      for (let pageNumber = 1; pageNumber <= sourcePdf.numPages; pageNumber++) {
+        setStatus(`Compressing page ${pageNumber} of ${sourcePdf.numPages}…`);
+
+        const page = await sourcePdf.getPage(pageNumber);
+        const viewport = page.getViewport({ scale: selected.scale });
+        const canvas = document.createElement("canvas");
+        const context = canvas.getContext("2d", { alpha: false });
+
+        if (!context) {
+          throw new Error("Could not create a canvas for compression.");
+        }
+
+        canvas.width = Math.ceil(viewport.width);
+        canvas.height = Math.ceil(viewport.height);
+        context.fillStyle = "#ffffff";
+        context.fillRect(0, 0, canvas.width, canvas.height);
+
+        await page.render({
+          canvasContext: context,
+          viewport,
+          background: "#ffffff"
+        }).promise;
+
+        const jpegBlob = await new Promise((resolve) =>
+          canvas.toBlob(resolve, "image/jpeg", selected.quality)
+        );
+
+        if (!jpegBlob) {
+          throw new Error(`Could not compress page ${pageNumber}.`);
+        }
+
+        const pageWidth = viewport.width * 72 / 96;
+        const pageHeight = viewport.height * 72 / 96;
+        const orientation = pageWidth > pageHeight ? "landscape" : "portrait";
+
+        pdf.addPage([pageWidth, pageHeight], orientation);
+
+        pdf.addImage(
+          await jpegBlob.arrayBuffer(),
+          "JPEG",
+          0,
+          0,
+          pageWidth,
+          pageHeight,
+          undefined,
+          "FAST"
+        );
+
+        canvas.width = 0;
+        canvas.height = 0;
+      }
+
+      const output = pdf.output("blob");
+
+      if (!output || output.size < 1) {
+        throw new Error("Compression produced an empty PDF.");
+      }
+
+      downloadBlob(
+        output,
+        `${baseName(file.name)}-compressed.pdf`
+      );
+
+      setStatus(`Done — compressed ${sourcePdf.numPages} PDF page(s).`);
+    } finally {
+      await sourcePdf.destroy();
+    }
+  }
   async function addWatermark() {
     if (!watermarkText.trim()) throw new Error("Enter watermark text.");
     const pdf = await readPdf(files[0]), font = await pdf.embedFont(StandardFonts.HelveticaBold);
